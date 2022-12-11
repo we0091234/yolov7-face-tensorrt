@@ -39,7 +39,7 @@ using namespace nvinfer1;
 
 static const int INPUT_W = 640;
 static const int INPUT_H = 640;
-static const int NUM_CLASSES = 2;  //单层车牌，双层车牌两类
+static const int NUM_CLASSES = 1;  
 
 
 const char* INPUT_BLOB_NAME = "images"; //onnx 输入  名字
@@ -156,22 +156,15 @@ int find_max(float *prob,int num) //找到类别
 }
 
 
-static void generate_yolox_proposals(float *feat_blob, float prob_threshold,
-                                     std::vector<Object> &objects,int OUTPUT_CANDIDATES) {
+static void generate_yolox_proposals(float *feat_blob, float prob_threshold,std::vector<Object> &objects,int OUTPUT_CANDIDATES)
+ {
   const int num_class = 1;  //人脸 一类
   const int ckpt=15  ; //yolov7 是15， 3*5=15
 
   const int num_anchors = OUTPUT_CANDIDATES;
 
-  for (int anchor_idx = 0; anchor_idx < num_anchors; anchor_idx++) {
-    // const int basic_pos = anchor_idx * (num_class + 5 + 1);
-    // float box_objectness = feat_blob[basic_pos + 4];
-
-    // int cls_id = feat_blob[basic_pos + 5];
-    // float score = feat_blob[basic_pos + 5 + 1 + cls_id];
-    // score *= box_objectness;
-
-
+  for (int anchor_idx = 0; anchor_idx < num_anchors; anchor_idx++) 
+  {
     const int basic_pos = anchor_idx * (num_class + 5 + ckpt); //5代表 x,y,w,h,object_score  ckpt代表5个关键点 每个关键点3个数据
     float box_objectness = feat_blob[basic_pos + 4];
 
