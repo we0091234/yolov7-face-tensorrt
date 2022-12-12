@@ -30,7 +30,7 @@ return x if self.training else torch.cat(z, 1)
 
 ```
  cd yolov7-face
- python models/export.py --weights yolov7s.pt --grid 
+ python models/export.py --weights yolov7s-face.pt --grid 
 ```
 
 ## How to Run, yolov7s-face  as example
