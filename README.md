@@ -26,7 +26,7 @@
 return x if self.training else torch.cat(z, 1)
 ```
 
-  step3. Export to onnx model
+  step4. Export to onnx model
 
 ```
  cd yolov7-face
