@@ -4,6 +4,35 @@
 
   The Pytorch implementation is [yolov7-face](https://github.com/derronqi/yolov7-face).
 
+## **onnx export**
+
+  step1.  git clone  https://github.com/derronqi/yolov7-face
+
+  step2.  modify models/export.py
+
+```
+ #line 72
+ #output_names = None
+ # modified into:
+ output_names = ["output"]
+```
+
+   step3.  modify models/yolo.py   class  IKeypoint
+
+```
+#line 308
+# return x if self.training else (torch.cat(z, 1), x)
+# modified into:
+return x if self.training else torch.cat(z, 1)
+```
+
+  step3. Export to onnx model
+
+```
+ cd yolov7-face
+ python models/export.py --weights yolov7s.pt --grid 
+```
+
 ## How to Run, yolov7s-face  as example
 
 1. Modify the tensorrt cuda opencv path in CMakeLists.txt
