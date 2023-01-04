@@ -24,7 +24,7 @@ include_directories(${PROJECT_SOURCE_DIR}/include)
 #onnx2trt
 add_subdirectory(${PROJECT_SOURCE_DIR}/onnx2trt)
 
-cuda_add_executable(yolov7_face yolov7-face.cpp utils.cpp preprocess.cu)
+cuda_add_executable(yolov7_face yolov7-face.cpp utils.cpp preprocess.cu postprocess.cu)
 
 target_link_libraries(yolov7_face nvinfer)
 target_link_libraries(yolov7_face cudart)

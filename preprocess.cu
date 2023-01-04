@@ -5,16 +5,16 @@ __global__ void warpaffine_kernel(
     uint8_t* src, int src_line_size, int src_width, 
     int src_height, float* dst, int dst_width, 
     int dst_height, uint8_t const_value_st,
-    AffineMatrix d2s, int edge) {
+    float *d2i, int edge) {
     int position = blockDim.x * blockIdx.x + threadIdx.x;
     if (position >= edge) return;
 
-    float m_x1 = d2s.value[0];
-    float m_y1 = d2s.value[1];
-    float m_z1 = d2s.value[2];
-    float m_x2 = d2s.value[3];
-    float m_y2 = d2s.value[4];
-    float m_z2 = d2s.value[5];
+    float m_x1 = d2i[0];
+    float m_y1 = d2i[1];
+    float m_z1 = d2i[2];
+    float m_x2 = d2i[3];
+    float m_y2 = d2i[4];
+    float m_z2 = d2i[5];
 
     int dx = position % dst_width;
     int dy = position / dst_width;
@@ -88,29 +88,13 @@ __global__ void warpaffine_kernel(
 void preprocess_kernel_img(
     uint8_t* src, int src_width, int src_height,
     float* dst, int dst_width, int dst_height,
-    cudaStream_t stream) {
-    AffineMatrix s2d,d2s;
-    float scale = std::min(dst_height / (float)src_height, dst_width / (float)src_width);
-
-    s2d.value[0] = scale;
-    s2d.value[1] = 0;
-    s2d.value[2] = -scale * src_width  * 0.5  + dst_width * 0.5;
-    s2d.value[3] = 0;
-    s2d.value[4] = scale;
-    s2d.value[5] = -scale * src_height * 0.5 + dst_height * 0.5;
-
-    cv::Mat m2x3_s2d(2, 3, CV_32F, s2d.value);
-    cv::Mat m2x3_d2s(2, 3, CV_32F, d2s.value);
-    cv::invertAffineTransform(m2x3_s2d, m2x3_d2s);
-
-    memcpy(d2s.value, m2x3_d2s.ptr<float>(0), sizeof(d2s.value));
-
+    float*d2i,cudaStream_t stream) {
     int jobs = dst_height * dst_width;
     int threads = 256;
     int blocks = ceil(jobs / (float)threads);
     warpaffine_kernel<<<blocks, threads, 0, stream>>>(
         src, src_width*3, src_width,
         src_height, dst, dst_width,
-        dst_height, 128, d2s, jobs);
+        dst_height, 128, d2i, jobs);
 
 }

@@ -11,12 +11,21 @@
 #include "logging.h"
 #include "include/utils.hpp"
 #include "preprocess.h"
+#include "postprocess.h"
 #define MAX_IMAGE_INPUT_SIZE_THRESH 5000 * 5000
+#define MAX_OBJECTS 2048
+#define NUM_BOX_ELEMENT 17
+
+struct affineMatrix  //letter_box  仿射变换矩阵
+{
+    float i2d[6];       //仿射变换正变换
+    float d2i[6];       //仿射变换逆变换
+};
 
 struct bbox 
 {
      float x1,x2,y1,y2;
-     float landmarks[10];
+     float landmarks[10]; //5个关键点
      float score;
 };
 
@@ -46,228 +55,13 @@ const char* INPUT_BLOB_NAME = "images"; //onnx 输入  名字
 const char* OUTPUT_BLOB_NAME = "output"; //onnx 输出 名字
 static Logger gLogger;
 
-struct Object
+
+void affine_project(float *d2i,float x,float y,float *ox,float *oy) //通过仿射变换逆矩阵，恢复成原图的坐标
 {
-    cv::Rect_<float> rect; //
-    float landmarks[10]; //5个关键点
-    int label;
-    float prob;
-};
-
-
-static inline float intersection_area(const Object& a, const Object& b)
-{
-    cv::Rect_<float> inter = a.rect & b.rect;
-    return inter.area();
+    *ox = d2i[0]*x+d2i[1]*y+d2i[2];
+    *oy = d2i[3]*x+d2i[4]*y+d2i[5];
 }
 
-static void qsort_descent_inplace(std::vector<Object>& faceobjects, int left, int right)
-{
-    int i = left;
-    int j = right;
-    float p = faceobjects[(left + right) / 2].prob;
-
-    while (i <= j)
-    {
-        while (faceobjects[i].prob > p)
-            i++;
-
-        while (faceobjects[j].prob < p)
-            j--;
-
-        if (i <= j)
-        {
-            // swap
-            std::swap(faceobjects[i], faceobjects[j]);
-
-            i++;
-            j--;
-        }
-    }
-
-    #pragma omp parallel sections
-    {
-        #pragma omp section
-        {
-            if (left < j) qsort_descent_inplace(faceobjects, left, j);
-        }
-        #pragma omp section
-        {
-            if (i < right) qsort_descent_inplace(faceobjects, i, right);
-        }
-    }
-}
-
-static void qsort_descent_inplace(std::vector<Object>& objects)
-{
-    if (objects.empty())
-        return;
-
-    qsort_descent_inplace(objects, 0, objects.size() - 1);
-}
-
-static void nms_sorted_bboxes(const std::vector<Object>& faceobjects, std::vector<int>& picked, float nms_threshold)
-{
-    picked.clear();
-
-    const int n = faceobjects.size();
-
-    std::vector<float> areas(n);
-    for (int i = 0; i < n; i++)
-    {
-        areas[i] = faceobjects[i].rect.area();
-    }
-
-    for (int i = 0; i < n; i++)
-    {
-        const Object& a = faceobjects[i];
-
-        int keep = 1;
-        for (int j = 0; j < (int)picked.size(); j++)
-        {
-            const Object& b = faceobjects[picked[j]];
-
-            // intersection over union
-            float inter_area = intersection_area(a, b);
-            float union_area = areas[i] + areas[picked[j]] - inter_area;
-            // float IoU = inter_area / union_area
-            if (inter_area / union_area > nms_threshold)
-                keep = 0;
-        }
-
-        if (keep)
-            picked.push_back(i);
-    }
-}
-
-
-
-int find_max(float *prob,int num) //找到类别
-{
-    int max= 0;
-    for(int i=1; i<num; i++)
-    {
-        if (prob[max]<prob[i])
-         max = i;
-    }
-
-    return max;
-
-}
-
-
-static void generate_yolox_proposals(float *feat_blob, float prob_threshold,std::vector<Object> &objects,int OUTPUT_CANDIDATES)
- {
-  const int num_class = 1;  //人脸 一类
-  const int ckpt=15  ; //yolov7 是15， 3*5=15
-
-  const int num_anchors = OUTPUT_CANDIDATES;
-
-  for (int anchor_idx = 0; anchor_idx < num_anchors; anchor_idx++) 
-  {
-    const int basic_pos = anchor_idx * (num_class + 5 + ckpt); //5代表 x,y,w,h,object_score  ckpt代表5个关键点 每个关键点3个数据
-    float box_objectness = feat_blob[basic_pos + 4];
-
-    // int cls_id = find_max(&feat_blob[basic_pos +5+ckpt],num_class);   //找到类别v5
-    int cls_id = find_max(&feat_blob[basic_pos +5],num_class);   //v7
-    // float score = feat_blob[basic_pos + 5 +8 + cls_id]; //v5
-    float score = feat_blob[basic_pos + 5 + cls_id];  //v7
-    score *= box_objectness; 
-
-
-    if (score > prob_threshold) {
-      // yolox/models/yolo_head.py decode logic
-      float x_center = feat_blob[basic_pos + 0];
-      float y_center = feat_blob[basic_pos + 1];
-      float w = feat_blob[basic_pos + 2];
-      float h = feat_blob[basic_pos + 3];
-      float x0 = x_center - w * 0.5f;
-      float y0 = y_center - h * 0.5f;
-      
-    //   float *landmarks=&feat_blob[basic_pos +5]; //v5
-    float *landmarks=&feat_blob[basic_pos +5+num_class];
-
-      Object obj;
-      obj.rect.x = x0;
-      obj.rect.y = y0;
-      obj.rect.width = w;
-      obj.rect.height = h;
-      obj.label = cls_id;
-      obj.prob = score;
-      int k = 0;
-    //   for (int i = 0; i<ckpt; i++)
-    //   {
-    //      obj.landmarks[k++]=landmarks[i];
-    //   }
-
-   //人脸五个关键点，总共10个数
-         obj.landmarks[0]=landmarks[0];
-          obj.landmarks[1]=landmarks[1];
-           obj.landmarks[2]=landmarks[3];
-            obj.landmarks[3]=landmarks[4];
-             obj.landmarks[4]=landmarks[6];
-              obj.landmarks[5]=landmarks[7];
-               obj.landmarks[6]=landmarks[9];
-                obj.landmarks[7]=landmarks[10];
-                obj.landmarks[8]=landmarks[12];
-                obj.landmarks[9]=landmarks[13];
-               
-      
-      
-
-      objects.push_back(obj);
-    }
-  }
-}
-
-static void decode_outputs(float* prob, std::vector<Object>& objects, float scale, const int img_w, const int img_h,int OUTPUT_CANDIDATES,int top,int left) {
-        std::vector<Object> proposals;
-        std::vector<bbox> bboxes;
-        generate_yolox_proposals(prob,  BBOX_CONF_THRESH, proposals,OUTPUT_CANDIDATES);
-        // generate_proposals(prob,  BBOX_CONF_THRESH, bboxes,OUTPUT_CANDIDATES);
-        // std::cout << "num of boxes before nms: " << proposals.size() << std::endl;
-
-        qsort_descent_inplace(proposals);
-        // std::sort(bboxes.begin(),bboxes.end(),my_func);
-        std::vector<int> picked;
-        nms_sorted_bboxes(proposals, picked, NMS_THRESH);
-        // auto choice =my_nms(bboxes, NMS_THRESH);
-
-        int count = picked.size();
-
-        // std::cout << "num of boxes: " << count << std::endl;
-
-        objects.resize(count);
-        for (int i = 0; i < count; i++)
-        {
-            objects[i] = proposals[picked[i]];
-
-            // adjust offset to original unpadded
-            float x0 = (objects[i].rect.x-left) / scale;
-            float y0 = (objects[i].rect.y-top) / scale;
-            float x1 = (objects[i].rect.x + objects[i].rect.width-left) / scale;
-            float y1 = (objects[i].rect.y + objects[i].rect.height-top) / scale;
-            
-            float *landmarks = objects[i].landmarks;
-            for(int i= 0; i<10; i++)
-            {
-                if(i%2==0)
-                landmarks[i]=(landmarks[i]-left)/scale;
-                else
-                landmarks[i]=(landmarks[i]-top)/scale;
-            }
-            // clip
-            x0 = std::max(std::min(x0, (float)(img_w - 1)), 0.f);
-            y0 = std::max(std::min(y0, (float)(img_h - 1)), 0.f);
-            x1 = std::max(std::min(x1, (float)(img_w - 1)), 0.f);
-            y1 = std::max(std::min(y1, (float)(img_h - 1)), 0.f);
-
-            objects[i].rect.x = x0;
-            objects[i].rect.y = y0;
-            objects[i].rect.width = x1 - x0;
-            objects[i].rect.height = y1 - y0;
-        }
-}
 
 const float color_list[5][3] =
 {
@@ -278,15 +72,20 @@ const float color_list[5][3] =
     {255,255,0},
 };
 
-
-void doInference_cu(IExecutionContext& context, cudaStream_t& stream, void **buffers, float* output, int batchSize,int OUTPUT_SIZE) {
-    // infer on the batch asynchronously, and DMA output back to host
-    context.enqueue(batchSize, buffers, stream, nullptr);
-    CHECK(cudaMemcpyAsync(output, buffers[1], batchSize * OUTPUT_SIZE * sizeof(float), cudaMemcpyDeviceToHost, stream));
-    cudaStreamSynchronize(stream);
+void getd2i(affineMatrix &afmt,cv::Size  to,cv::Size from) //计算仿射变换的矩阵和逆矩阵
+{
+    float scale = std::min(1.0*to.width/from.width, 1.0*to.height/from.height);
+    afmt.i2d[0]=scale;
+    afmt.i2d[1]=0;
+    afmt.i2d[2]=-scale*from.width*0.5+to.width*0.5;
+    afmt.i2d[3]=0;
+    afmt.i2d[4]=scale;
+    afmt.i2d[5]=-scale*from.height*0.5+to.height*0.5;
+    cv::Mat i2d_mat(2,3,CV_32F,afmt.i2d);
+    cv::Mat d2i_mat(2,3,CV_32F,afmt.d2i);
+    cv::invertAffineTransform(i2d_mat,d2i_mat);
+    memcpy(afmt.d2i, d2i_mat.ptr<float>(0), sizeof(afmt.d2i));
 }
-
-
 
 int main(int argc, char** argv)
  {
@@ -295,7 +94,7 @@ int main(int argc, char** argv)
     size_t size{0};
     const std::string engine_file_path {argv[1]};  
     std::ifstream file(engine_file_path, std::ios::binary);
-
+    int batch_size = 1;
     if (file.good()) {
         file.seekg(0, file.end);
         size = file.tellg();
@@ -335,7 +134,7 @@ int main(int argc, char** argv)
         output_size *= out_dims.d[j];
     }
 
-
+    
     CHECK(cudaMalloc((void**)&buffers[inputIndex],  3 * INPUT_H * INPUT_W * sizeof(float)));
     CHECK(cudaMalloc((void**)&buffers[outputIndex], output_size * sizeof(float)));
 
@@ -345,12 +144,18 @@ int main(int argc, char** argv)
     CHECK(cudaStreamCreate(&stream));
     uint8_t* img_host = nullptr;
     uint8_t* img_device = nullptr;
+    float *affine_matrix_d2i_host = nullptr;
+    float *affine_matrix_d2i_device = nullptr;
+    float *decode_ptr_device = nullptr;
+    float *decode_ptr_host = nullptr;
+    decode_ptr_host = new float[sizeof(float)*(1+MAX_OBJECTS*NUM_BOX_ELEMENT)];
     // prepare input data cache in pinned memory 
     CHECK(cudaMallocHost((void**)&img_host, MAX_IMAGE_INPUT_SIZE_THRESH * 3));
     // prepare input data cache in device memory
     CHECK(cudaMalloc((void**)&img_device, MAX_IMAGE_INPUT_SIZE_THRESH * 3));
-
-   
+    CHECK(cudaMallocHost(&affine_matrix_d2i_host,sizeof(float)*6));
+    CHECK(cudaMalloc(&affine_matrix_d2i_device,sizeof(float)*6));
+    CHECK(cudaMalloc(&decode_ptr_device,sizeof(float)*(1+MAX_OBJECTS*NUM_BOX_ELEMENT)));
 
     static float* prob = new float[output_size];
 
@@ -363,47 +168,81 @@ int main(int argc, char** argv)
     readFileList(const_cast<char *>(imgPath.c_str()),imagList,fileType);
     double sumTime = 0;
     int index = 0;
+    cv::Size to(INPUT_W,INPUT_H);
     for (auto &input_image_path:imagList) 
     {
-        
+        affineMatrix afmt;
         cv::Mat img = cv::imread(input_image_path);
-          double begin_time = cv::getTickCount();
-         float *buffer_idx = (float*)buffers[inputIndex];
+
+        getd2i(afmt,to,cv::Size(img.cols,img.rows));
+        double begin_time = cv::getTickCount();
+        float *buffer_idx = (float*)buffers[inputIndex];
         size_t size_image = img.cols * img.rows * 3;
         size_t size_image_dst = INPUT_H * INPUT_W * 3;
+        memcpy(affine_matrix_d2i_host,afmt.d2i,sizeof(afmt.d2i));
         memcpy(img_host, img.data, size_image);
        
         CHECK(cudaMemcpyAsync(img_device, img_host, size_image, cudaMemcpyHostToDevice, stream));
-        preprocess_kernel_img(img_device, img.cols, img.rows, buffer_idx, INPUT_W, INPUT_H, stream);
+        CHECK(cudaMemcpyAsync(affine_matrix_d2i_device,affine_matrix_d2i_host,sizeof(afmt.d2i),cudaMemcpyHostToDevice,stream));
+        preprocess_kernel_img(img_device, img.cols, img.rows, buffer_idx, INPUT_W, INPUT_H,affine_matrix_d2i_device, stream); //前处理 ，相当于letter_box
         double time_pre = cv::getTickCount();
         double time_pre_=(time_pre-begin_time)/cv::getTickFrequency()*1000;
         // std::cout<<"preprocessing time is "<<time_pre_<<" ms"<<std::endl;
       
-        doInference_cu(*context_det,stream, (void**)buffers,prob,1,output_size);
+        // doInference_cu(*context_det,stream, (void**)buffers,prob,1,output_size);
+        (*context_det).enqueue(batch_size, (void**)buffers, stream, nullptr);
+        float *predict = (float *)buffers[outputIndex];
+        CHECK(cudaMemsetAsync(decode_ptr_device,0,sizeof(int),stream));
+        decode_kernel_invoker(predict,OUTPUT_CANDIDATES,1,5,BBOX_CONF_THRESH,affine_matrix_d2i_device,decode_ptr_device,MAX_OBJECTS,stream);  //cuda 后处理
 
-        float r = std::min(INPUT_W / (img.cols*1.0), INPUT_H / (img.rows*1.0));
-        int unpad_w = r * img.cols;
-        int unpad_h = r * img.rows;
-        int left = (INPUT_W-unpad_w)/2;
-        int top = (INPUT_H-unpad_h)/2; 
-        int img_w = img.cols;
-        int img_h = img.rows;
-        float scale = std::min(INPUT_W / (img.cols*1.0), INPUT_H / (img.rows*1.0));
+        nms_kernel_invoker(decode_ptr_device, NMS_THRESH, MAX_OBJECTS, stream);//cuda nms
         
-        std::vector<Object> objects;
-        decode_outputs(prob, objects, scale, img_w, img_h,OUTPUT_CANDIDATES,top,left);
+        CHECK(cudaMemcpyAsync(decode_ptr_host,decode_ptr_device,sizeof(float)*(1+MAX_OBJECTS*NUM_BOX_ELEMENT),cudaMemcpyDeviceToHost,stream));
+        
+
+        cudaStreamSynchronize(stream);
+        double end_time = cv::getTickCount();
+        std::vector<bbox> boxes;
+               
+        int boxes_count=0;
+        int count = std::min((int)*decode_ptr_host,MAX_OBJECTS);
+ 
+        for (int i = 0; i<count;i++)
+        {
+           int basic_pos = 1+i*NUM_BOX_ELEMENT;
+           int keep_flag= decode_ptr_host[basic_pos+6];
+           if (keep_flag==1)
+           {
+             boxes_count+=1;
+             bbox  box;
+             box.x1 =  decode_ptr_host[basic_pos+0];
+             box.y1 =  decode_ptr_host[basic_pos+1];
+             box.x2 =  decode_ptr_host[basic_pos+2];
+             box.y2 =  decode_ptr_host[basic_pos+3];
+             box.score=decode_ptr_host[basic_pos+4];
+             int landmark_pos = basic_pos+7;
+             for (int id = 0; id<5; id+=1)
+             {
+                box.landmarks[2*id]=decode_ptr_host[landmark_pos+2*id];
+                box.landmarks[2*id+1]=decode_ptr_host[landmark_pos+2*id+1];
+             }
+             boxes.push_back(box);
+           }
+        }
+
         std::cout<<input_image_path<<" ";
         
-        for (int i = 0; i<objects.size(); i++)
+        for (int i = 0; i<boxes_count; i++)
         {
-            cv::rectangle(img, objects[i].rect, cv::Scalar(0,255,0), 2);
+            cv::Rect roi_area(boxes[i].x1,boxes[i].y1,boxes[i].x2-boxes[i].x1,boxes[i].y2-boxes[i].y1);
+            cv::rectangle(img, roi_area, cv::Scalar(0,255,0), 2);
             for (int j= 0; j<5; j++)
             {
             cv::Scalar color = cv::Scalar(color_list[j][0], color_list[j][1], color_list[j][2]);
-            cv::circle(img,cv::Point(objects[i].landmarks[2*j], objects[i].landmarks[2*j+1]),2,color,-1);
+            cv::circle(img,cv::Point(boxes[i].landmarks[2*j], boxes[i].landmarks[2*j+1]),2,color,-1);
             }
         }
-          double end_time = cv::getTickCount();
+          
           auto time_gap = (end_time-begin_time)/cv::getTickFrequency()*1000;
         std::cout<<"  time_gap: "<<time_gap<<"ms ";
          if (index)
@@ -427,9 +266,13 @@ int main(int argc, char** argv)
     runtime_det->destroy();
  
     cudaStreamDestroy(stream);
+    CHECK(cudaFree(affine_matrix_d2i_device));
+    CHECK(cudaFreeHost(affine_matrix_d2i_host));
     CHECK(cudaFree(img_device));
     CHECK(cudaFreeHost(img_host));
     CHECK(cudaFree(buffers[inputIndex]));
     CHECK(cudaFree(buffers[outputIndex]));
+    CHECK(cudaFree(decode_ptr_device));
+    delete [] decode_ptr_host;
     return 0;
 }
