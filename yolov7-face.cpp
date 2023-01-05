@@ -42,13 +42,14 @@ struct bbox
 
 #define DEVICE 0  // GPU id
 #define NMS_THRESH 0.45
-#define BBOX_CONF_THRESH 0.25
+#define BBOX_CONF_THRESH 0.3
 
 using namespace nvinfer1;
 
 static const int INPUT_W = 640;
 static const int INPUT_H = 640;
-static const int NUM_CLASSES = 1;  
+static const int NUM_CLASSES = 1;  //类别数
+static const int CKPT_NUM=5;  //关键点个数
 
 
 const char* INPUT_BLOB_NAME = "images"; //onnx 输入  名字
@@ -190,10 +191,10 @@ int main(int argc, char** argv)
         // std::cout<<"preprocessing time is "<<time_pre_<<" ms"<<std::endl;
       
         // doInference_cu(*context_det,stream, (void**)buffers,prob,1,output_size);
-        (*context_det).enqueue(batch_size, (void**)buffers, stream, nullptr);
+        (*context_det).enqueueV2((void**)buffers, stream, nullptr);
         float *predict = (float *)buffers[outputIndex];
         CHECK(cudaMemsetAsync(decode_ptr_device,0,sizeof(int),stream));
-        decode_kernel_invoker(predict,OUTPUT_CANDIDATES,1,5,BBOX_CONF_THRESH,affine_matrix_d2i_device,decode_ptr_device,MAX_OBJECTS,stream);  //cuda 后处理
+        decode_kernel_invoker(predict,OUTPUT_CANDIDATES,NUM_CLASSES,CKPT_NUM,BBOX_CONF_THRESH,affine_matrix_d2i_device,decode_ptr_device,MAX_OBJECTS,stream);  //cuda 后处理
 
         nms_kernel_invoker(decode_ptr_device, NMS_THRESH, MAX_OBJECTS, stream);//cuda nms
         
