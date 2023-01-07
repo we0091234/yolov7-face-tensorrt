@@ -149,7 +149,7 @@ int main(int argc, char** argv)
     float *affine_matrix_d2i_device = nullptr;
     float *decode_ptr_device = nullptr;
     float *decode_ptr_host = nullptr;
-    decode_ptr_host = new float[sizeof(float)*(1+MAX_OBJECTS*NUM_BOX_ELEMENT)];
+    decode_ptr_host = new float[1+MAX_OBJECTS*NUM_BOX_ELEMENT];
     // prepare input data cache in pinned memory 
     CHECK(cudaMallocHost((void**)&img_host, MAX_IMAGE_INPUT_SIZE_THRESH * 3));
     // prepare input data cache in device memory
