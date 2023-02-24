@@ -6,14 +6,14 @@ add_definitions(-w)
 # option(CUDA_USE_STATIC_CUDA_RUNTIME OFF)
 find_package(CUDA REQUIRED)
 set(CMAKE_CXX_STANDARD 11)
-set(CMAKE_BUILD_TYPE Release)
+set(CMAKE_BUILD_TYPE Debug)
 
 #cuda 
 include_directories(/mnt/Gu/softWare/cuda-11.0/targets/x86_64-linux/include)
 link_directories(/mnt/Gu/softWare/cuda-11.0/targets/x86_64-linux/lib)
 
 #tensorrt 
-include_directories(/mnt/Gpan/tensorRT/TensorRT-8.2.0.6//include/)
+include_directories(/mnt/Gpan/tensorRT/TensorRT-8.2.0.6/include/)
 link_directories(/mnt/Gpan/tensorRT/TensorRT-8.2.0.6/lib/)
 
 #opencv 
@@ -31,4 +31,4 @@ target_link_libraries(yolov7_face cudart)
 target_link_libraries(yolov7_face nvonnxparser)
 target_link_libraries(yolov7_face ${OpenCV_LIBS})
 
-add_definitions(-O2 -pthread)
+add_definitions(-O0 -pthread)
