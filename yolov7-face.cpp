@@ -14,7 +14,6 @@
 #include "postprocess.h"
 #define MAX_IMAGE_INPUT_SIZE_THRESH 5000 * 5000
 #define MAX_OBJECTS 2048
-#define NUM_BOX_ELEMENT 17
 
 struct affineMatrix  //letter_box  仿射变换矩阵
 {
@@ -90,6 +89,8 @@ void getd2i(affineMatrix &afmt,cv::Size  to,cv::Size from) //计算仿射变换�
 
 int main(int argc, char** argv)
  {
+
+    int NUM_BOX_ELEMENT=7+CKPT_NUM*2;
     cudaSetDevice(DEVICE);
     char *trtModelStreamDet{nullptr};
     size_t size{0};
@@ -194,9 +195,9 @@ int main(int argc, char** argv)
         (*context_det).enqueueV2((void**)buffers, stream, nullptr);
         float *predict = (float *)buffers[outputIndex];
         CHECK(cudaMemsetAsync(decode_ptr_device,0,sizeof(int),stream));
-        decode_kernel_invoker(predict,OUTPUT_CANDIDATES,NUM_CLASSES,CKPT_NUM,BBOX_CONF_THRESH,affine_matrix_d2i_device,decode_ptr_device,MAX_OBJECTS,stream);  //cuda 后处理
+        decode_kernel_invoker(predict,NUM_BOX_ELEMENT,OUTPUT_CANDIDATES,NUM_CLASSES,CKPT_NUM,BBOX_CONF_THRESH,affine_matrix_d2i_device,decode_ptr_device,MAX_OBJECTS,stream);  //cuda 后处理
 
-        nms_kernel_invoker(decode_ptr_device, NMS_THRESH, MAX_OBJECTS, stream);//cuda nms
+        nms_kernel_invoker(decode_ptr_device, NMS_THRESH, MAX_OBJECTS, stream,NUM_BOX_ELEMENT);//cuda nms
         
         CHECK(cudaMemcpyAsync(decode_ptr_host,decode_ptr_device,sizeof(float)*(1+MAX_OBJECTS*NUM_BOX_ELEMENT),cudaMemcpyDeviceToHost,stream));
         
@@ -222,7 +223,7 @@ int main(int argc, char** argv)
              box.y2 =  decode_ptr_host[basic_pos+3];
              box.score=decode_ptr_host[basic_pos+4];
              int landmark_pos = basic_pos+7;
-             for (int id = 0; id<5; id+=1)
+             for (int id = 0; id<CKPT_NUM; id+=1)
              {
                 box.landmarks[2*id]=decode_ptr_host[landmark_pos+2*id];
                 box.landmarks[2*id+1]=decode_ptr_host[landmark_pos+2*id+1];
@@ -237,7 +238,7 @@ int main(int argc, char** argv)
         {
             cv::Rect roi_area(boxes[i].x1,boxes[i].y1,boxes[i].x2-boxes[i].x1,boxes[i].y2-boxes[i].y1);
             cv::rectangle(img, roi_area, cv::Scalar(0,255,0), 2);
-            for (int j= 0; j<5; j++)
+            for (int j= 0; j<CKPT_NUM; j++)
             {
             cv::Scalar color = cv::Scalar(color_list[j][0], color_list[j][1], color_list[j][2]);
             cv::circle(img,cv::Point(boxes[i].landmarks[2*j], boxes[i].landmarks[2*j+1]),2,color,-1);

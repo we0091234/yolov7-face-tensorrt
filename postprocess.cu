@@ -1,12 +1,11 @@
 #include "postprocess.h"
-
-    const int NUM_BOX_ELEMENT = 17;      // left, top, right, bottom, confidence, class, keepflag, 5 keypoints 
+#define MAX_LANDMARK 20
     static __device__ void affine_project(float* matrix, float x, float y, float* ox, float* oy){
         *ox = matrix[0] * x + matrix[1] * y + matrix[2];
         *oy = matrix[3] * x + matrix[4] * y + matrix[5];
     }
 
-    static __global__ void decode_kernel(float* predict, int num_bboxes, int num_classes,int ckpt, float confidence_threshold, float* invert_affine_matrix, float* parray, int max_objects){  
+    static __global__ void decode_kernel(float* predict,int NUM_BOX_ELEMENT, int num_bboxes, int num_classes,int ckpt, float confidence_threshold, float* invert_affine_matrix, float* parray, int max_objects){  
 
         int position = blockDim.x * blockIdx.x + threadIdx.x;
 		if (position >= num_bboxes) return;
@@ -41,18 +40,13 @@
         
         //五个关键点
         float *landmarks = pitem+5+num_classes;
-        float x1         = landmarks[0];
-        float y1         = landmarks[1];
-        float x2         = landmarks[3];
-        float y2         = landmarks[4];
-        float x3         = landmarks[6];
-        float y3         = landmarks[7];
-        float x4         = landmarks[9];
-        float y4         = landmarks[10];
-        float x5         = landmarks[12];
-        float y5         = landmarks[13];
-
-
+        float landmark_array[MAX_LANDMARK*2];
+        for (int i = 0; i<ckpt; i++)
+        {
+            landmark_array[2*i]=landmarks[3*i];
+            landmark_array[2*i+1]=landmarks[3*i+1];
+        }
+     
         float left   = cx - width * 0.5f;
         float top    = cy - height * 0.5f;
         float right  = cx + width * 0.5f;
@@ -61,11 +55,11 @@
         affine_project(invert_affine_matrix, left,  top,    &left,  &top);
         affine_project(invert_affine_matrix, right, bottom, &right, &bottom);
 
-        affine_project(invert_affine_matrix, x1,y1,&x1,&y1);
-        affine_project(invert_affine_matrix, x2,y2,&x2,&y2);
-        affine_project(invert_affine_matrix, x3,y3,&x3,&y3);
-        affine_project(invert_affine_matrix, x4,y4,&x4,&y4);
-        affine_project(invert_affine_matrix, x5,y5,&x5,&y5);
+        for(int i = 0; i<ckpt; i++)
+        {
+           affine_project(invert_affine_matrix, landmark_array[2*i],landmark_array[2*i+1],&landmark_array[2*i],&landmark_array[2*i+1]); 
+        }
+        // affine_project(invert_affine_matrix, x5,y5,&x5,&y5);
 
         float* pout_item = parray + 1 + index * NUM_BOX_ELEMENT;
         *pout_item++ = left;
@@ -76,21 +70,12 @@
         *pout_item++ = label;
         *pout_item++ = 1; // 1 = keep, 0 = ignore
         
-         //five keypoint
-        *pout_item++=x1;
-        *pout_item++=y1;
-
-        *pout_item++=x2;
-        *pout_item++=y2;
-
-        *pout_item++=x3;
-        *pout_item++=y3;
-
-        *pout_item++=x4;
-        *pout_item++=y4;
-
-        *pout_item++=x5;
-        *pout_item++=y5;
+     
+        for(int i = 0; i<ckpt; i++)
+        {
+            *pout_item++=landmark_array[2*i];
+            *pout_item++=landmark_array[2*i+1];
+        }
 
 
     }
@@ -114,7 +99,7 @@
         return c_area / (a_area + b_area - c_area);
     }
 
-    static __global__ void nms_kernel(float* bboxes, int max_objects, float threshold){
+    static __global__ void nms_kernel(float* bboxes, int max_objects, float threshold,int NUM_BOX_ELEMENT){
 
         int position = (blockDim.x * blockIdx.x + threadIdx.x);
         int count = min((int)*bboxes, max_objects);
@@ -144,18 +129,18 @@
         }
     } 
 
-    void decode_kernel_invoker(float* predict, int num_bboxes, int num_classes,int ckpt, float confidence_threshold, float* invert_affine_matrix, float* parray, int max_objects, cudaStream_t stream)
+    void decode_kernel_invoker(float* predict, int  NUM_BOX_ELEMENT,int num_bboxes,int num_classes,int ckpt, float confidence_threshold, float* invert_affine_matrix, float* parray, int max_objects, cudaStream_t stream)
     {
         int block = 256;
         int  grid =  ceil(num_bboxes / (float)block);
         
-        decode_kernel<<<grid, block, 0, stream>>>(predict, num_bboxes, num_classes,ckpt, confidence_threshold, invert_affine_matrix, parray, max_objects);
+        decode_kernel<<<grid, block, 0, stream>>>(predict,NUM_BOX_ELEMENT, num_bboxes, num_classes,ckpt, confidence_threshold, invert_affine_matrix, parray, max_objects);
     }
 
-    void nms_kernel_invoker(float* parray, float nms_threshold, int max_objects, cudaStream_t stream){
+    void nms_kernel_invoker(float* parray, float nms_threshold, int max_objects, cudaStream_t stream,int NUM_BOX_ELEMENT){
         
         
         int block = max_objects<256? max_objects:256;
         int grid = ceil(max_objects / (float)block);
-        nms_kernel<<<grid, block, 0, stream>>>(parray, max_objects, nms_threshold);
+        nms_kernel<<<grid, block, 0, stream>>>(parray, max_objects, nms_threshold,NUM_BOX_ELEMENT);
     }
